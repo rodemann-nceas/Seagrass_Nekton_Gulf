@@ -1,0 +1,179 @@
+---
+title: "RF_Nekton_Habitat_Suitability"
+output: html_document
+date: "2026-04-01"
+---
+## Author: Jon Rodemann
+
+```{r setup, include=FALSE}
+library(tidyverse)
+library(randomForest)
+library(mlr3verse)
+library(iml)
+library(ranger)
+```
+
+The following code goes through various iterations of random forest models to look at habitat suitability of nekton in seagrass habitats
+
+```{r, include=FALSE}
+#Load in datasets
+sled <- read.csv('Data/combined_sled_species_sp.csv')
+trawl <- read.csv('Data/combined_trawl_species.csv')
+
+##We want to isolate the 8 important fish species. Here are the ones:
+# - Gray snapper
+# - Blue crab
+# - Pink shrimp
+# - Spotted seatrout
+# - Red drum
+# - White shrimp
+# - Brown shrimp
+# - Lane snapper
+
+##Ok. We are going to try a couple of things. Here are the different models we are going to try:
+#Dependent variable:
+# Binary
+# Abundance with zeros
+# Hurdle RF
+#Independent variables:
+# All
+# Handpicked set
+```
+
+## Binary with all variables
+
+This model will translate the abundance data into presence/absence data and then train a RF model for binary on all of the independent variables for each species. Will do sled and trawl separately and then together.
+
+First let's organize the raw data into something we can use
+
+```{r}
+#First we have to organize the data. This will include isolating only the species of interest and including all of the zeros
+#add in all zeros
+#Extract all of the station, site, and sample_period data to combine it together after
+stat_dat_sled <- sled %>% dplyr::select(site, station, sample_period, light_attenuation_av:pull_id, station_seagrass_richness:sf_station_sd_below_wt_m) %>% distinct()
+
+stat_dat_trawl <- trawl %>% dplyr::select(tow_id:station_sd_rm_sht_ratio, site, station, sample_period, tow_area:light_attenuation_av, seagrass_richness) %>% distinct()
+
+#add in all zeros
+sled_zero <- sled %>% dplyr::select(site, station, sample_period, species_common, species_abundance) %>% 
+  dplyr::group_by(site, station, sample_period, species_common) %>% 
+  dplyr::summarise(species_abundance = sum(species_abundance, na.rm = TRUE), .groups = "drop") %>%
+  # Use complete() to generate all combinations
+  complete(
+    nesting(site, station, sample_period), # Only crosses combinations that actually exist in your data
+    species_common,                        # Crosses the above with all unique species
+    fill = list(species_abundance = 0)     # Fills implicitly missing abundances with 0
+  )
+
+trawl_zero <- trawl %>% dplyr::select(site, station, sample_period, species_common, species_abundance) %>% 
+  dplyr::group_by(site, station, sample_period, species_common) %>% 
+  dplyr::summarise(species_abundance = sum(species_abundance, na.rm = TRUE), .groups = "drop") %>%
+  # Use complete() to generate all combinations
+  complete(
+    nesting(site, station, sample_period), # Only crosses combinations that actually exist in your data
+    species_common,                        # Crosses the above with all unique species
+    fill = list(species_abundance = 0)     # Fills implicitly missing abundances with 0
+  )
+
+#recombine the data
+sledall <- sled_zero %>% left_join(stat_dat_sled, by = c('site', 'station', 'sample_period'))
+trawlall <- trawl_zero %>% left_join(stat_dat_trawl, by = c('site', 'station', 'sample_period'))
+
+#Isolate species of interest and replace NAs with zeros
+sledsp <- sledall %>% dplyr::filter(species_common %in% c('gray snapper', 'blue crab', 'pink shrimp', 'white shrimp', 'brown shrimp', 'spotted seatrout', 'lane snapper', 'red drum')) %>% mutate(across(where(is.numeric), ~replace_na(.x, 0))) %>% dplyr::select(-c(spp_x, hd_station_ep_wt_gg, hd_station_sd_ep_wt_gg, hd_station_below_wt_m, hd_station_sd_below_wt_m, spp_y, he_station_sd_ep_wt_gg, he_station_sd_below_wt_m, rm_stationsp_sd_shoots, rm_stationsp_sd_shoots_m, rm_stationsp_se_shoots_m, rm_station_sd_above_wt_m, rm_station_ep_wt_gg, rm_station_sd_ep_wt_gg, rm_station_below_wt_m, rm_station_sd_below_wt_m))
+
+trawlsp <- trawlall %>% dplyr::filter(species_common %in% c('gray snapper', 'blue crab', 'pink shrimp', 'white shrimp', 'brown shrimp', 'spotted seatrout', 'lane snapper', 'red drum')) %>% mutate(across(where(is.numeric), ~replace_na(.x, 0)))
+
+#Ok. We have our dataset with abundances and zeros. We are going to add a column to indicate binary presence/absence and an ID column
+sledbin <- sledsp %>% mutate(pa = if_else(species_abundance == 0, 0, 1), ID = row_number())
+
+trawlbin <- trawlsp %>% mutate(pa = if_else(species_abundance == 0, 0, 1), ID = row_number())
+```
+
+We set up the binary data for both the sled and trawl data. Let's set up the RF binary model
+
+```{r}
+#Going to start with sled data with brown shrimp
+data <- sledbin %>% filter(species_common == 'brown shrimp')
+
+data$pa <- as.factor(data$pa)
+
+#Take out columns that will not be in model
+data <- data %>% dplyr::select(-c(station, sample_period, species_common, species_abundance, secchi, pull_id, site))
+
+str(data)
+data$depth <- as.numeric(data$depth)
+data$station_seagrass_richness <- as.numeric(data$station_seagrass_richness)
+set.seed(19)
+# Randomly select 70% of the data frame for the training dataset
+data.train <- data[sample(1:nrow(data), nrow(data) * 0.7, replace = FALSE), ]
+# Remainder (i.e., 30%) becomes the test dataset.
+data.test <- data[!(data$ID %in% data.train$ID), ]
+
+data.train <- data.train %>% dplyr::select(-ID)
+data.test <- data.test %>% dplyr::select(-ID)
+
+#set tasks for training and test datasets
+task_train <- as_task_classif(x = data.train, target = 'pa', positive = '1')
+task_test <- as_task_classif(x = data.test, target = 'pa', positive = '1')
+
+# Make learner.
+learner <-lrn(
+  "classif.ranger",
+  predict_type = "prob",
+  mtry  = to_tune(1, ncol(data.train) - 4),
+  sample.fraction = to_tune(0.2, 0.9),
+  min.node.size = to_tune(p_int(1,10)),
+  importance = 'impurity'
+)
+
+#tune hyperparameters
+instance = ti(
+  task = task_train,
+  learner = learner,
+  resampling = rsmp("cv", folds = 5),
+  measures = msr("classif.ce"),
+  terminator = trm("none")
+)
+
+tuner = mlr3tuning::tnr("grid_search", resolution = 5, batch_size = 5)
+tuner$optimize(instance) # Takes ~ 4 minutes on my relatively fast computer
+
+#store tuned hyperparameters in learner
+learner$param_set$values <- instance$result_learner_param_vals
+
+#finally! We can train our model with the train function
+learner$train(task_train)
+
+#let's quickly look at the model
+learner$model
+
+#Accuracy of model - first on training data, then testing data
+measures <- msrs(c('classif.acc'))
+
+pred_train <- learner$predict(task_train)
+pred_train$confusion
+pred_train$score(measures)
+
+
+pred_test <- learner$predict(task_test)
+pred_test$confusion
+pred_test$score(measures)
+
+#importance with iml package - this is looking at the most influencial predictors in the model
+x_data <- data.train %>% dplyr::select(-pa) 
+# Create "Predictor" object to interpret findings via the iml package.
+predictor_data <- Predictor$new(learner, data = x_data, y = data.train$pa) 
+
+imp_data <- FeatureImp$new(predictor_data, loss = "ce") # Calculate importance.
+
+imp_df_data <- imp_data$results 
+
+#so salinity is the most important variable for brown shrimp. Let's investigate how it impacts the presence of shrimp
+
+effect_sal <- FeatureEffect$new(predictor_data, feature = c('salinity'), method = 'pdp')
+effect_sal$plot()
+
+
+```
+
