@@ -88,13 +88,19 @@ trawlsp <- trawlall %>% dplyr::filter(species_common %in% c('gray snapper', 'blu
 sledbin <- sledsp %>% mutate(pa = if_else(species_abundance == 0, 0, 1), ID = row_number())
 
 trawlbin <- trawlsp %>% mutate(pa = if_else(species_abundance == 0, 0, 1), ID = row_number())
+
+#combine the trawl and sled datasets for a more complete dataset
+sledbin <- sledbin %>% mutate(type = 'sled')
+trawlbin <- trawlbin %>% mutate(type = 'trawl')
+
+st <- bind_rows(sledbin, trawlbin) %>% group_by(site, station, sample_period) %>% fill(everything(), .direction = 'downup') %>% ungroup()
 ```
 
-We set up the binary data for both the sled and trawl data. Let's set up the RF binary model
+We set up the binary data for both datasets. Let's set up the RF binary model
 
-```{r}
-#Going to start with sled data with brown shrimp
-data <- sledbin %>% filter(species_common == 'brown shrimp')
+```{r Binary_brown_shrimp}
+#filter for brown shrimp
+data <- st %>% filter(species_common == 'brown shrimp')
 
 data$pa <- as.factor(data$pa)
 
@@ -105,13 +111,26 @@ str(data)
 data$depth <- as.numeric(data$depth)
 data$station_seagrass_richness <- as.numeric(data$station_seagrass_richness)
 set.seed(19)
-# Randomly select 70% of the data frame for the training dataset
-data.train <- data[sample(1:nrow(data), nrow(data) * 0.7, replace = FALSE), ]
+# Randomly select 70% of the data frame for the training dataset - from each
+datasled <- data %>% dplyr::filter(type == "sled")
+datatr <- data %>% dplyr::filter(type == 'trawl')
+data.trains <- datasled[sample(1:nrow(datasled), nrow(datasled) * 0.8, replace = FALSE), ]
+data.traint <- datatr[sample(1:nrow(datatr), nrow(datatr) * 0.8, replace = FALSE), ]
 # Remainder (i.e., 30%) becomes the test dataset.
-data.test <- data[!(data$ID %in% data.train$ID), ]
+data.tests <- datasled[!(datasled$ID %in% data.trains$ID), ]
+data.testt <- datatr[!(datatr$ID %in% data.traint$ID), ]
 
-data.train <- data.train %>% dplyr::select(-ID)
-data.test <- data.test %>% dplyr::select(-ID)
+
+data.train <- bind_rows(data.trains, data.traint) %>% dplyr::select(-c(ID, tow_id))
+data.test <- bind_rows(data.tests, data.testt) %>% dplyr::select(-c(ID, tow_id))
+
+#remove columns with Inf data
+data.train <- data.train %>% dplyr::select(where(~ !is.numeric(.x) || !any(is.infinite(.x))))
+data.test <- data.test %>% dplyr::select(where(~ !is.numeric(.x) || !any(is.infinite(.x))))
+
+#change columns with NA data to zeros
+data.train <- data.train %>% dplyr::mutate(across(where(is.numeric), ~replace_na(.x, 0)))
+data.test <- data.test %>% dplyr::mutate(across(where(is.numeric), ~replace_na(.x, 0)))
 
 #set tasks for training and test datasets
 task_train <- as_task_classif(x = data.train, target = 'pa', positive = '1')
@@ -169,11 +188,515 @@ imp_data <- FeatureImp$new(predictor_data, loss = "ce") # Calculate importance.
 
 imp_df_data <- imp_data$results 
 
-#so salinity is the most important variable for brown shrimp. Let's investigate how it impacts the presence of shrimp
+
+#most important covariate is the type of collection. Here is what it looks like
+effect_type <- FeatureEffect$new(predictor_data, feature = c('type'), method = 'pdp')
+typebrownshrimp <- effect_type$plot()
+
+#so salinity is the most important variable for brown shrimp out of the environmental data. Let's investigate how it impacts the presence of shrimp
 
 effect_sal <- FeatureEffect$new(predictor_data, feature = c('salinity'), method = 'pdp')
 effect_sal$plot()
+salbrownshrimp <- effect_sal$plot()
+
+#temperature is the next important
+effect_temp <- FeatureEffect$new(predictor_data, feature = c('temp'), method = 'pdp')
+effect_temp$plot()
+tempbrownshrimp <- effect_temp$plot()
+
+#next are 2 standard errors of canopy height! One for overall, one for thalassia
+effect_chse <- FeatureEffect$new(predictor_data, feature = c('station_se_mcanopy'), method = 'pdp')
+effect_chse$plot()
+chsebrownshrimp <- effect_chse$plot()
 
 
+effect_chsett <- FeatureEffect$new(predictor_data, feature = c('tt_stationsp_se_mcanopy'), method = 'pdp')
+effect_chsett$plot()
+chsettbrownshrimp <- effect_chsett$plot()
+
+#Overall, lower probability of presence at lower salinities, higher temperatures, and lower se of canopy height. More likely to catch brown shrimp in sled
 ```
 
+
+```{r Binary_spotted_seatrout}
+#filter for spotted seatrout
+data <- st %>% filter(species_common == 'spotted seatrout')
+
+data$pa <- as.factor(data$pa)
+inv <- as.data.frame(data$pa)
+
+#Take out columns that will not be in model
+data <- data %>% dplyr::select(-c(station, sample_period, species_common, species_abundance, secchi, pull_id, site))
+
+str(data)
+data$depth <- as.numeric(data$depth)
+data$station_seagrass_richness <- as.numeric(data$station_seagrass_richness)
+set.seed(19)
+# Randomly select 70% of the data frame for the training dataset - from each
+datasled <- data %>% dplyr::filter(type == "sled")
+datatr <- data %>% dplyr::filter(type == 'trawl')
+data.trains <- datasled[sample(1:nrow(datasled), nrow(datasled) * 0.8, replace = FALSE), ]
+data.traint <- datatr[sample(1:nrow(datatr), nrow(datatr) * 0.8, replace = FALSE), ]
+# Remainder (i.e., 30%) becomes the test dataset.
+data.tests <- datasled[!(datasled$ID %in% data.trains$ID), ]
+data.testt <- datatr[!(datatr$ID %in% data.traint$ID), ]
+
+
+data.train <- bind_rows(data.trains, data.traint) %>% dplyr::select(-c(ID, tow_id))
+data.test <- bind_rows(data.tests, data.testt) %>% dplyr::select(-c(ID, tow_id))
+
+#remove columns with Inf data
+data.train <- data.train %>% dplyr::select(where(~ !is.numeric(.x) || !any(is.infinite(.x))))
+data.test <- data.test %>% dplyr::select(where(~ !is.numeric(.x) || !any(is.infinite(.x))))
+
+#change columns with NA data to zeros
+data.train <- data.train %>% dplyr::mutate(across(where(is.numeric), ~replace_na(.x, 0)))
+data.test <- data.test %>% dplyr::mutate(across(where(is.numeric), ~replace_na(.x, 0)))
+
+#set tasks for training and test datasets
+task_train <- as_task_classif(x = data.train, target = 'pa', positive = '1')
+task_test <- as_task_classif(x = data.test, target = 'pa', positive = '1')
+
+# Make learner.
+learner <-lrn(
+  "classif.ranger",
+  predict_type = "prob",
+  mtry  = to_tune(1, ncol(data.train) - 4),
+  sample.fraction = to_tune(0.2, 0.9),
+  min.node.size = to_tune(p_int(1,10)),
+  importance = 'impurity'
+)
+
+#tune hyperparameters
+instance = ti(
+  task = task_train,
+  learner = learner,
+  resampling = rsmp("cv", folds = 5),
+  measures = msr("classif.ce"),
+  terminator = trm("none")
+)
+
+tuner = mlr3tuning::tnr("grid_search", resolution = 5, batch_size = 5)
+tuner$optimize(instance) # Takes ~ 4 minutes on my relatively fast computer
+
+#store tuned hyperparameters in learner
+learner$param_set$values <- instance$result_learner_param_vals
+
+#finally! We can train our model with the train function
+learner$train(task_train)
+
+#let's quickly look at the model
+learner$model
+
+#Accuracy of model - first on training data, then testing data
+measures <- msrs(c('classif.acc'))
+
+pred_train <- learner$predict(task_train)
+pred_train$confusion
+pred_train$score(measures)
+
+
+pred_test <- learner$predict(task_test)
+pred_test$confusion
+pred_test$score(measures)
+
+#importance with iml package - this is looking at the most influencial predictors in the model
+x_data <- data.train %>% dplyr::select(-pa) 
+# Create "Predictor" object to interpret findings via the iml package.
+predictor_data <- Predictor$new(learner, data = x_data, y = data.train$pa) 
+
+imp_data <- FeatureImp$new(predictor_data, loss = "ce") # Calculate importance.
+
+imp_df_data <- imp_data$results 
+
+#The random forest model does not work for the seatrout. It thinks that there are no seatrout. I don't know why, maybe will change when we pick and choose parameters
+```
+
+```{r Binary_lane_snapper}
+#filter for lane snapper
+data <- st %>% filter(species_common == 'lane snapper')
+
+data$pa <- as.factor(data$pa)
+inv <- as.data.frame(data$pa)
+
+#Take out columns that will not be in model
+data <- data %>% dplyr::select(-c(station, sample_period, species_common, species_abundance, secchi, pull_id, site))
+
+str(data)
+data$depth <- as.numeric(data$depth)
+data$station_seagrass_richness <- as.numeric(data$station_seagrass_richness)
+set.seed(19)
+# Randomly select 70% of the data frame for the training dataset - from each
+datasled <- data %>% dplyr::filter(type == "sled")
+datatr <- data %>% dplyr::filter(type == 'trawl')
+data.trains <- datasled[sample(1:nrow(datasled), nrow(datasled) * 0.8, replace = FALSE), ]
+data.traint <- datatr[sample(1:nrow(datatr), nrow(datatr) * 0.8, replace = FALSE), ]
+# Remainder (i.e., 30%) becomes the test dataset.
+data.tests <- datasled[!(datasled$ID %in% data.trains$ID), ]
+data.testt <- datatr[!(datatr$ID %in% data.traint$ID), ]
+
+
+data.train <- bind_rows(data.trains, data.traint) %>% dplyr::select(-c(ID, tow_id))
+data.test <- bind_rows(data.tests, data.testt) %>% dplyr::select(-c(ID, tow_id))
+
+#remove columns with Inf data
+data.train <- data.train %>% dplyr::select(where(~ !is.numeric(.x) || !any(is.infinite(.x))))
+data.test <- data.test %>% dplyr::select(where(~ !is.numeric(.x) || !any(is.infinite(.x))))
+
+#change columns with NA data to zeros
+data.train <- data.train %>% dplyr::mutate(across(where(is.numeric), ~replace_na(.x, 0)))
+data.test <- data.test %>% dplyr::mutate(across(where(is.numeric), ~replace_na(.x, 0)))
+
+#set tasks for training and test datasets
+task_train <- as_task_classif(x = data.train, target = 'pa', positive = '1')
+task_test <- as_task_classif(x = data.test, target = 'pa', positive = '1')
+
+# Make learner.
+learner <-lrn(
+  "classif.ranger",
+  predict_type = "prob",
+  mtry  = to_tune(1, ncol(data.train) - 4),
+  sample.fraction = to_tune(0.2, 0.9),
+  min.node.size = to_tune(p_int(1,10)),
+  importance = 'impurity'
+)
+
+#tune hyperparameters
+instance = ti(
+  task = task_train,
+  learner = learner,
+  resampling = rsmp("cv", folds = 5),
+  measures = msr("classif.ce"),
+  terminator = trm("none")
+)
+
+tuner = mlr3tuning::tnr("grid_search", resolution = 5, batch_size = 5)
+tuner$optimize(instance) # Takes ~ 4 minutes on my relatively fast computer
+
+#store tuned hyperparameters in learner
+learner$param_set$values <- instance$result_learner_param_vals
+
+#finally! We can train our model with the train function
+learner$train(task_train)
+
+#let's quickly look at the model
+learner$model
+
+#Accuracy of model - first on training data, then testing data
+measures <- msrs(c('classif.acc'))
+
+pred_train <- learner$predict(task_train)
+pred_train$confusion
+pred_train$score(measures)
+
+
+pred_test <- learner$predict(task_test)
+pred_test$confusion
+pred_test$score(measures)
+
+#importance with iml package - this is looking at the most influencial predictors in the model
+x_data <- data.train %>% dplyr::select(-pa) 
+# Create "Predictor" object to interpret findings via the iml package.
+predictor_data <- Predictor$new(learner, data = x_data, y = data.train$pa) 
+
+imp_data <- FeatureImp$new(predictor_data, loss = "ce") # Calculate importance.
+
+imp_df_data <- imp_data$results 
+
+#also doesn't work because of the amount of 0's
+```
+
+```{r Binary_blue_crab}
+#filter for blue crab
+data <- st %>% filter(species_common == 'blue crab')
+
+sum(data$pa)
+
+data$pa <- as.factor(data$pa)
+
+#Take out columns that will not be in model
+data <- data %>% dplyr::select(-c(station, sample_period, species_common, species_abundance, secchi, pull_id, site))
+
+str(data)
+data$depth <- as.numeric(data$depth)
+data$station_seagrass_richness <- as.numeric(data$station_seagrass_richness)
+set.seed(19)
+# Randomly select 70% of the data frame for the training dataset - from each
+datasled <- data %>% dplyr::filter(type == "sled")
+datatr <- data %>% dplyr::filter(type == 'trawl')
+data.trains <- datasled[sample(1:nrow(datasled), nrow(datasled) * 0.8, replace = FALSE), ]
+data.traint <- datatr[sample(1:nrow(datatr), nrow(datatr) * 0.8, replace = FALSE), ]
+# Remainder (i.e., 30%) becomes the test dataset.
+data.tests <- datasled[!(datasled$ID %in% data.trains$ID), ]
+data.testt <- datatr[!(datatr$ID %in% data.traint$ID), ]
+
+
+data.train <- bind_rows(data.trains, data.traint) %>% dplyr::select(-c(ID, tow_id))
+data.test <- bind_rows(data.tests, data.testt) %>% dplyr::select(-c(ID, tow_id))
+
+#remove columns with Inf data
+data.train <- data.train %>% dplyr::select(where(~ !is.numeric(.x) || !any(is.infinite(.x))))
+data.test <- data.test %>% dplyr::select(where(~ !is.numeric(.x) || !any(is.infinite(.x))))
+
+#change columns with NA data to zeros
+data.train <- data.train %>% dplyr::mutate(across(where(is.numeric), ~replace_na(.x, 0)))
+data.test <- data.test %>% dplyr::mutate(across(where(is.numeric), ~replace_na(.x, 0)))
+
+#set tasks for training and test datasets
+task_train <- as_task_classif(x = data.train, target = 'pa', positive = '1')
+task_test <- as_task_classif(x = data.test, target = 'pa', positive = '1')
+
+# Make learner.
+learner <-lrn(
+  "classif.ranger",
+  predict_type = "prob",
+  mtry  = to_tune(1, ncol(data.train) - 4),
+  sample.fraction = to_tune(0.2, 0.9),
+  min.node.size = to_tune(p_int(1,10)),
+  importance = 'impurity'
+)
+
+#tune hyperparameters
+instance = ti(
+  task = task_train,
+  learner = learner,
+  resampling = rsmp("cv", folds = 5),
+  measures = msr("classif.ce"),
+  terminator = trm("none")
+)
+
+tuner = mlr3tuning::tnr("grid_search", resolution = 5, batch_size = 5)
+tuner$optimize(instance) # Takes ~ 4 minutes on my relatively fast computer
+
+#store tuned hyperparameters in learner
+learner$param_set$values <- instance$result_learner_param_vals
+
+#finally! We can train our model with the train function
+learner$train(task_train)
+
+#let's quickly look at the model
+learner$model
+
+#Accuracy of model - first on training data, then testing data
+measures <- msrs(c('classif.acc'))
+
+pred_train <- learner$predict(task_train)
+pred_train$confusion
+pred_train$score(measures)
+
+
+pred_test <- learner$predict(task_test)
+pred_test$confusion
+pred_test$score(measures)
+
+#importance with iml package - this is looking at the most influencial predictors in the model
+x_data <- data.train %>% dplyr::select(-pa) 
+# Create "Predictor" object to interpret findings via the iml package.
+predictor_data <- Predictor$new(learner, data = x_data, y = data.train$pa) 
+
+imp_data <- FeatureImp$new(predictor_data, loss = "ce") # Calculate importance.
+
+imp_df_data <- imp_data$results 
+
+#very inaccurate
+```
+
+```{r Binary_pink_shrimp}
+#filter for blue crab
+data <- st %>% filter(species_common == 'pink shrimp')
+
+sum(data$pa)
+
+data$pa <- as.factor(data$pa)
+
+#Take out columns that will not be in model
+data <- data %>% dplyr::select(-c(station, sample_period, species_common, species_abundance, secchi, pull_id, site))
+
+str(data)
+data$depth <- as.numeric(data$depth)
+data$station_seagrass_richness <- as.numeric(data$station_seagrass_richness)
+set.seed(19)
+# Randomly select 70% of the data frame for the training dataset - from each
+datasled <- data %>% dplyr::filter(type == "sled")
+datatr <- data %>% dplyr::filter(type == 'trawl')
+data.trains <- datasled[sample(1:nrow(datasled), nrow(datasled) * 0.8, replace = FALSE), ]
+data.traint <- datatr[sample(1:nrow(datatr), nrow(datatr) * 0.8, replace = FALSE), ]
+# Remainder (i.e., 30%) becomes the test dataset.
+data.tests <- datasled[!(datasled$ID %in% data.trains$ID), ]
+data.testt <- datatr[!(datatr$ID %in% data.traint$ID), ]
+
+
+data.train <- bind_rows(data.trains, data.traint) %>% dplyr::select(-c(ID, tow_id))
+data.test <- bind_rows(data.tests, data.testt) %>% dplyr::select(-c(ID, tow_id))
+
+#remove columns with Inf data
+data.train <- data.train %>% dplyr::select(where(~ !is.numeric(.x) || !any(is.infinite(.x))))
+data.test <- data.test %>% dplyr::select(where(~ !is.numeric(.x) || !any(is.infinite(.x))))
+
+#change columns with NA data to zeros
+data.train <- data.train %>% dplyr::mutate(across(where(is.numeric), ~replace_na(.x, 0)))
+data.test <- data.test %>% dplyr::mutate(across(where(is.numeric), ~replace_na(.x, 0)))
+
+#set tasks for training and test datasets
+task_train <- as_task_classif(x = data.train, target = 'pa', positive = '1')
+task_test <- as_task_classif(x = data.test, target = 'pa', positive = '1')
+
+# Make learner.
+learner <-lrn(
+  "classif.ranger",
+  predict_type = "prob",
+  mtry  = to_tune(1, ncol(data.train) - 4),
+  sample.fraction = to_tune(0.2, 0.9),
+  min.node.size = to_tune(p_int(1,10)),
+  importance = 'impurity'
+)
+
+#tune hyperparameters
+instance = ti(
+  task = task_train,
+  learner = learner,
+  resampling = rsmp("cv", folds = 5),
+  measures = msr("classif.ce"),
+  terminator = trm("none")
+)
+
+tuner = mlr3tuning::tnr("grid_search", resolution = 5, batch_size = 5)
+tuner$optimize(instance) # Takes ~ 4 minutes on my relatively fast computer
+
+#store tuned hyperparameters in learner
+learner$param_set$values <- instance$result_learner_param_vals
+
+#finally! We can train our model with the train function
+learner$train(task_train)
+
+#let's quickly look at the model
+learner$model
+
+#Accuracy of model - first on training data, then testing data
+measures <- msrs(c('classif.acc'))
+
+pred_train <- learner$predict(task_train)
+pred_train$confusion
+pred_train$score(measures)
+
+
+pred_test <- learner$predict(task_test)
+pred_test$confusion
+pred_test$score(measures)
+
+#importance with iml package - this is looking at the most influencial predictors in the model
+x_data <- data.train %>% dplyr::select(-pa) 
+# Create "Predictor" object to interpret findings via the iml package.
+predictor_data <- Predictor$new(learner, data = x_data, y = data.train$pa) 
+
+imp_data <- FeatureImp$new(predictor_data, loss = "ce") # Calculate importance.
+
+imp_df_data <- imp_data$results 
+
+#not too bad in accuracy, but still not great. Salinity is the most important factor
+effect_sal <- FeatureEffect$new(predictor_data, feature = c('salinity'), method = 'pdp')
+effect_sal$plot()
+salpinkshrimp <- effect_sal$plot()
+
+#The next important one is se of canopy height
+effect_chse <- FeatureEffect$new(predictor_data, feature = c('station_se_mcanopy'), method = 'pdp')
+effect_chse$plot()
+chsepinkshrimp <- effect_chse$plot()
+
+#looks like pink shrimp are more present in lower salinities, but have the same relationship with canopy height as brown shrimp
+```
+
+```{r Binary_gray_snapper}
+#filter for gray snapper
+data <- st %>% filter(species_common == 'gray snapper')
+
+sum(data$pa)
+
+data$pa <- as.factor(data$pa)
+
+#Take out columns that will not be in model
+data <- data %>% dplyr::select(-c(station, sample_period, species_common, species_abundance, secchi, pull_id, site))
+
+str(data)
+data$depth <- as.numeric(data$depth)
+data$station_seagrass_richness <- as.numeric(data$station_seagrass_richness)
+set.seed(19)
+# Randomly select 70% of the data frame for the training dataset - from each
+datasled <- data %>% dplyr::filter(type == "sled")
+datatr <- data %>% dplyr::filter(type == 'trawl')
+data.trains <- datasled[sample(1:nrow(datasled), nrow(datasled) * 0.8, replace = FALSE), ]
+data.traint <- datatr[sample(1:nrow(datatr), nrow(datatr) * 0.8, replace = FALSE), ]
+# Remainder (i.e., 30%) becomes the test dataset.
+data.tests <- datasled[!(datasled$ID %in% data.trains$ID), ]
+data.testt <- datatr[!(datatr$ID %in% data.traint$ID), ]
+
+
+data.train <- bind_rows(data.trains, data.traint) %>% dplyr::select(-c(ID, tow_id))
+data.test <- bind_rows(data.tests, data.testt) %>% dplyr::select(-c(ID, tow_id))
+
+#remove columns with Inf data
+data.train <- data.train %>% dplyr::select(where(~ !is.numeric(.x) || !any(is.infinite(.x))))
+data.test <- data.test %>% dplyr::select(where(~ !is.numeric(.x) || !any(is.infinite(.x))))
+
+#change columns with NA data to zeros
+data.train <- data.train %>% dplyr::mutate(across(where(is.numeric), ~replace_na(.x, 0)))
+data.test <- data.test %>% dplyr::mutate(across(where(is.numeric), ~replace_na(.x, 0)))
+
+#set tasks for training and test datasets
+task_train <- as_task_classif(x = data.train, target = 'pa', positive = '1')
+task_test <- as_task_classif(x = data.test, target = 'pa', positive = '1')
+
+# Make learner.
+learner <-lrn(
+  "classif.ranger",
+  predict_type = "prob",
+  mtry  = to_tune(1, ncol(data.train) - 4),
+  sample.fraction = to_tune(0.2, 0.9),
+  min.node.size = to_tune(p_int(1,10)),
+  importance = 'impurity'
+)
+
+#tune hyperparameters
+instance = ti(
+  task = task_train,
+  learner = learner,
+  resampling = rsmp("cv", folds = 5),
+  measures = msr("classif.ce"),
+  terminator = trm("none")
+)
+
+tuner = mlr3tuning::tnr("grid_search", resolution = 5, batch_size = 5)
+tuner$optimize(instance) # Takes ~ 4 minutes on my relatively fast computer
+
+#store tuned hyperparameters in learner
+learner$param_set$values <- instance$result_learner_param_vals
+
+#finally! We can train our model with the train function
+learner$train(task_train)
+
+#let's quickly look at the model
+learner$model
+
+#Accuracy of model - first on training data, then testing data
+measures <- msrs(c('classif.acc'))
+
+pred_train <- learner$predict(task_train)
+pred_train$confusion
+pred_train$score(measures)
+
+
+pred_test <- learner$predict(task_test)
+pred_test$confusion
+pred_test$score(measures)
+
+#importance with iml package - this is looking at the most influencial predictors in the model
+x_data <- data.train %>% dplyr::select(-pa) 
+# Create "Predictor" object to interpret findings via the iml package.
+predictor_data <- Predictor$new(learner, data = x_data, y = data.train$pa) 
+
+imp_data <- FeatureImp$new(predictor_data, loss = "ce") # Calculate importance.
+
+imp_df_data <- imp_data$results 
+
+#awful accuracy!
+```
