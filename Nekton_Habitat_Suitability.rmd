@@ -798,6 +798,7 @@ predictor_data <- Predictor$new(learner, data = x_data, y = data.train$pa)
 imp_data <- FeatureImp$new(predictor_data, loss = "ce") # Calculate importance.
 
 imp_df_data <- imp_data$results 
+imp_df_data
 
 #so salinity is the most important variable for brown shrimp out of the environmental data. Let's investigate how it impacts the presence of shrimp
 
@@ -1434,4 +1435,244 @@ imp_data <- FeatureImp$new(predictor_data, loss = "ce") # Calculate importance.
 imp_df_data <- imp_data$results 
 
 #Lane snapper model not good
+```
+#We decided not to include the Random Forest models just because they are not good. So let's just look at Liying's models. I want to summarize all of the lengths for the species per site and also look at species of seagrass at each site
+
+```{r}
+#First we have to subset the data to the species of interest
+sleds <- sled %>% dplyr::filter(species_common %in% c('gray snapper', 'blue crab', 'pink shrimp', 'white shrimp', 'brown shrimp', 'spotted seatrout', 'lane snapper', 'red drum'))
+
+trawls <- trawl %>% dplyr::filter(species_common %in% c('gray snapper', 'blue crab', 'pink shrimp', 'white shrimp', 'brown shrimp', 'spotted seatrout', 'lane snapper', 'red drum'))
+
+#now it is all about summarization. For sled:
+# - Average av_tl for all species besides crabs
+# - Average av_cw for all crabs
+#The following need to be summarized PER BAY, not including all of the rows that have different species
+# - Average temp for temp
+# - Average salinity for salinity
+# - Average do for do
+# - Average depth for depth
+# - Average secchi for secchi
+# - Average station_leaf_mlength for canopy height
+# - Average tt_stationsp_lai for Thalassia cover
+# - Average hw_stationsp_lai for Halodule cover
+# - Average sf_stationsp_lai for Syringodium cover
+#For trawl:
+# - Average av_tl for all species besides crabs
+# - Average av_cw for all crabs
+#The following need to be summarized PER BAY, not including all of the rows that have different species
+# - Average temp for temp
+# - Average salinity for salinity
+# - Average do for do
+# - Average depth for depth
+# - Average secchi for secchi
+# - Average station_tt_pcov for Thalassia
+# - Average station_hw_pcov for Halodule
+# - Average station_sf_pcov for Syringodium
+# - Average of station_tt_can, station_hw_can, and station_sf_can for canopy height
+
+#sled first
+sled_usite <- sleds %>% group_by(site, sample_period) %>% summarize(avtemp = mean(temp, na.rm = T), sdtemp = sd(temp, na.rm = T), avsal = mean(salinity, na.rm = T), sdsal = sd(salinity, na.rm = T), avdo = mean(do, na.rm = T), sddo = sd(do, na.rm = T), avdepth = mean(depth, na.rm = T), sddepth = sd(depth, na.rm = T), avcan = mean(station_leaf_mlength, na.rm = T), sdcan = sd(station_leaf_mlength, na.rm = T), avtt = mean(tt_stationsp_lai, na.rm = T), sdtt = sd(tt_stationsp_lai, na.rm = T), avhw = mean(hw_stationsp_lai, na.rm = T), sdhw = sd(hw_stationsp_lai, na.rm = T), avsf = mean(sf_stationsp_lai, na.rm = T), sdsf = sd(sf_stationsp_lai, na.rm = T)) %>% mutate(sampling = 'sled')
+
+trawl_usite <- trawls %>% group_by(site, sample_period) %>% summarize(avtemp = mean(temp, na.rm = T), sdtemp = sd(temp, na.rm = T), avsal = mean(salinity, na.rm = T), sdsal = sd(salinity, na.rm = T), avdo = mean(do, na.rm = T), sddo = sd(do, na.rm = T), avdepth = mean(depth, na.rm = T), sddepth = sd(depth, na.rm = T), avcantt = mean(station_tt_can, na.rm = T), sdcantt = sd(station_tt_can, na.rm = T), avcanhw = mean(station_hw_can, na.rm = T), sdcanhw = sd(station_hw_can, na.rm = T), avcansf = mean(station_sf_can, na.rm = T), sdcansf = sd(station_sf_can, na.rm = T), avtt = mean(station_tt_pcov, na.rm = T), sdtt = sd(station_tt_pcov, na.rm = T), avhw = mean(station_hw_pcov, na.rm = T), sdhw = sd(station_hw_pcov, na.rm = T), avsf = mean(station_sf_pcov, na.rm = T), sdsf = sd(station_sf_pcov, na.rm = T)) %>% mutate(sampling = 'trawl', avcan = (avcantt+avcanhw+avcansf)/3, sdcan = (sdcantt+sdcanhw+sdcansf)/3) %>% dplyr::select(-avcantt, -sdcantt, -avcanhw, -sdcanhw, -avcansf, -sdcansf)
+
+#Now we need to do species for each type. sled first
+sled_spsize <- sleds %>% group_by(site, sample_period, species_common) %>% summarize(mean_length = if_else(species_common == 'blue crab', mean(av_cw), mean(av_tl)), sd_length = if_else(species_common == 'blue crab', mean(sd_cw, na.rm = T), mean(sd_tl, na.rm = T)), mean_abundance = mean(species_abundance), sd_abundance = sd(species_abundance)) %>% mutate(sampling = 'sled') %>% distinct()
+
+trawl_spsize <- trawls %>% group_by(site, sample_period, species_common) %>% summarize(mean_length = if_else(species_common == 'blue crab', mean(av_cw), mean(av_tl)), sd_length = if_else(species_common == 'blue crab', mean(sd_cw, na.rm = T), mean(sd_tl, na.rm = T)), mean_abundance = mean(species_abundance), sd_abundance = sd(species_abundance)) %>% mutate(sampling = 'trawl') %>% distinct()
+
+#Combine datasets
+
+sled_tot <- merge(sled_usite, sled_spsize, by = c('site', 'sample_period', 'sampling'))
+trawl_tot <- merge(trawl_usite, trawl_spsize, by = c('site', 'sample_period', 'sampling'))
+
+sumdat <- rbind(sled_tot, trawl_tot)
+write.csv(sumdat, file = 'Data/summary_data.csv')
+
+#summary plots
+
+#Reshape the data (Now including 'sampling')
+df_long <- sumdat %>%
+  # Add 'sampling' to the select statement
+  dplyr::select(site, sample_period, sampling, matches("^(av|sd)(temp|sal|do|depth|can|tt|hw|sf)$")) %>%
+  
+  # Add 'sampling' to the group_by statement
+  group_by(site, sample_period, sampling) %>%
+  summarise(across(everything(), mean, na.rm = TRUE), .groups = "drop") %>%
+  
+  # Exclude 'sampling' from the columns being pivoted
+  pivot_longer(
+    cols = -c(site, sample_period, sampling),
+    names_to = c(".value", "variable"),
+    names_pattern = "(av|sd)(.*)"
+  )
+
+# 3. Create a series of plots
+variables <- unique(df_long$variable)
+plot_list <- list()
+
+for (var in variables) {
+  
+  plot_data <- df_long %>% filter(variable == var)
+  
+  p <- ggplot(plot_data, aes(x = site, y = av, fill = site)) +
+    geom_col(position = position_dodge(), color = "black") +
+    geom_errorbar(aes(ymin = av, ymax = av + sd), 
+                  width = 0.2, 
+                  position = position_dodge(0.9)) +
+    
+    # USE FACET_GRID FOR TWO VARIABLES
+    # This will create rows based on 'sampling' and columns based on 'sample_period'
+    facet_grid(sampling ~ sample_period) +
+    
+    labs(
+      title = paste("Average", toupper(var), "by Site, Sample Period, and Sampling Type"),
+      y = paste("av", var, sep=""),
+      x = "Site"
+    ) +
+    theme_bw() +
+    theme(legend.position = "none") 
+  
+  plot_list[[var]] <- p
+}
+
+# View the plots
+print(plot_list[["temp"]])
+
+# (Optional) To save all of them to your computer as PDFs or PNGs:
+for (var in names(plot_list)) {
+   ggsave(paste0("barplot_", var, ".png"), plot = plot_list[[var]], width = 8, height = 5)
+}
+
+#Now for species size
+# Filter and prepare the data for species lengths
+# Select only the relevant columns and filter out rows where species might be empty/NA
+df_species <- sumdat %>%
+  dplyr::select(site, sample_period, sampling, species_common, mean_length, sd_length) %>%
+  filter(!is.na(species_common) & species_common != "")
+
+# 3. Create a list to hold the plots and get unique species
+species_list <- unique(df_species$species_common)
+length_plots <- list()
+
+for (sp in species_list) {
+  
+  # Filter data for just the current species
+  plot_data <- df_species %>% filter(species_common == sp)
+  
+  # Create the plot
+  p <- ggplot(plot_data, aes(x = site, y = mean_length, fill = site)) +
+    # Bar plot
+    geom_col(position = position_dodge(), color = "black", na.rm = TRUE) +
+    
+    # Error bar (mean to mean + sd). na.rm = TRUE prevents warnings if an sd is NA 
+    # (which can happen if only 1 specimen was caught)
+    geom_errorbar(aes(ymin = mean_length, ymax = mean_length + sd_length), 
+                  width = 0.2, 
+                  position = position_dodge(0.9),
+                  na.rm = TRUE) +
+    
+    # Facet grid for sampling type and sample period
+    facet_grid(sampling ~ sample_period) +
+    
+    # Formatting and labeling
+    labs(
+      title = paste("Mean Length of", str_to_title(sp), "by Site, Period, and Sampling"),
+      y = "Mean Length",
+      x = "Site"
+    ) +
+    theme_bw() +
+    theme(legend.position = "none")
+  
+  # Save the plot into the list using the species name
+  length_plots[[sp]] <- p
+}
+
+# View the plots
+# Print the first species in your list as an example:
+print(length_plots[[species_list[1]]])
+
+for (sp in names(length_plots)) {
+  
+  # Replace spaces in the species name with underscores for the file name
+  # e.g., "blue crab" becomes "blue_crab"
+  clean_name <- gsub(" ", "_", sp)
+  
+  # Create the full file name (saving as PNG here, but you can change to .pdf)
+  file_name <- paste0("mean_length_", clean_name, ".png")
+  
+  # Save the plot
+  ggsave(filename = file_name, 
+         plot = length_plots[[sp]], 
+         width = 8,      # Width in inches
+         height = 6,     # Height in inches
+         dpi = 300,      # High resolution
+         bg = "white")   # Ensures the background is white, not transparent
+
+}
+
+# Filter and prepare the data for species abundance
+# Select the new abundance columns
+df_abundance <- sumdat %>%
+  dplyr::select(site, sample_period, sampling, species_common, mean_abundance, sd_abundance) %>%
+  filter(!is.na(species_common) & species_common != "")
+
+# Create a list to hold the plots and get unique species
+species_list <- unique(df_abundance$species_common)
+abundance_plots <- list()
+
+for (sp in species_list) {
+  
+  # Filter data for just the current species
+  plot_data <- df_abundance %>% filter(species_common == sp)
+  
+  # Create the plot using the abundance columns
+  p <- ggplot(plot_data, aes(x = site, y = mean_abundance, fill = site)) +
+    # Bar plot
+    geom_col(position = position_dodge(), color = "black", na.rm = TRUE) +
+    
+    # Error bar (mean to mean + sd)
+    geom_errorbar(aes(ymin = mean_abundance, ymax = mean_abundance + sd_abundance), 
+                  width = 0.2, 
+                  position = position_dodge(0.9),
+                  na.rm = TRUE) +
+    
+    # Facet grid for sampling type and sample period
+    facet_grid(sampling ~ sample_period) +
+    
+    # Formatting and labeling
+    labs(
+      title = paste("Mean Abundance of", str_to_title(sp), "by Site, Period, and Sampling"),
+      y = "Mean Abundance",
+      x = "Site"
+    ) +
+    theme_bw() +
+    theme(legend.position = "none")
+  
+  # Save the plot into the list using the species name
+  abundance_plots[[sp]] <- p
+}
+
+# View an example plot (optional)
+# print(abundance_plots[[species_list[1]]])
+
+# Save all species abundance plots automatically
+for (sp in names(abundance_plots)) {
+  
+  # Replace spaces in the species name with underscores
+  clean_name <- gsub(" ", "_", sp)
+  
+  # Create the file name for abundance
+  file_name <- paste0("mean_abundance_", clean_name, ".png")
+  
+  # Save the plot
+  ggsave(filename = file_name, 
+         plot = abundance_plots[[sp]], 
+         width = 8, 
+         height = 6, 
+         dpi = 300, 
+         bg = "white")
+  
+  cat("Saved:", file_name, "\n")
+}
 ```
